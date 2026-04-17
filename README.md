@@ -113,6 +113,13 @@ build-system cheatsheet, SQL query library, and pitfalls list.
 - **Crash safety**: `SIGTERM` / `SIGABRT` / `SIGSEGV` / `SIGINT` and
   `atexit` trigger an async-signal-safe emergency flush that writes
   the active buffer with `write(2)` alone.
+- **Fork safety**: every flush path guards on `getpid() ==
+  g_tracer.pid` so a child's inherited handlers never corrupt the
+  parent's trace file. `pthread_atfork` handlers keep `cold_mutex`
+  coherent across `fork`. By default a child silently stops
+  tracing; `CPPFUNCTRACE_TRACE_CHILDREN=1` rebuilds tracer state in
+  the child and writes `<child_pid>.ftrc`. `vfork` is supported only
+  in the POSIX-legal `vfork` → `exec`/`_exit` pattern.
 
 ## Binary format
 

@@ -449,13 +449,15 @@ ft_record(void* fn, uint8_t flags)
     /* Fork detection. By default we silently stop in a child so a
      * forking app doesn't spray half-baked traces everywhere. When
      * CPPFUNCTRACE_TRACE_CHILDREN=1 we instead rebuild state on first
-     * post-fork hook and continue tracing under the child's PID. */
+     * post-fork hook and continue tracing under the child's PID.
+     *
+     * Deliberately NO global write here when we decide to drop: in a
+     * vfork()ed child the address space is shared with the parent, so
+     * storing to g_tracer.collecting would also disable tracing in
+     * the parent. Paying the ~1 ns getpid() vDSO call on every event
+     * in a live fork child is the lesser evil. */
     if (getpid() != g_tracer.pid) {
-        if (!g_trace_children) {
-            atomic_store_explicit(&g_tracer.collecting, 0,
-                                   memory_order_release);
-            return;
-        }
+        if (!g_trace_children) return;
         ft_reset_child();
     }
 
@@ -742,15 +744,9 @@ ft_emergency_flush(void)
         return;
     /* Never flush from a forked child — g_tracer.pid holds the parent's
      * PID so the output path would be <parent_pid>.ftrc, corrupting
-     * the parent's trace file. Signal handlers and atexit hooks are
-     * both inherited across fork, so without this guard a child that
-     * dies before any instrumented function ever ran (collecting is
-     * still COW-inherited as 1) would append its empty buffer to the
-     * parent's file. */
-    if (getpid() != g_tracer.pid) {
-        atomic_store_explicit(&g_tracer.collecting, 0, memory_order_release);
-        return;
-    }
+     * the parent's trace file. No global-flag store either: in a
+     * vfork()'d child the address space is shared with the parent. */
+    if (getpid() != g_tracer.pid) return;
     if (!atomic_exchange_explicit(&g_tracer.collecting, 0,
                                   memory_order_acq_rel))
         return;
@@ -1002,11 +998,9 @@ cppfunctrace_stop(void)
     if (!atomic_load_explicit(&g_tracer.initialised, memory_order_acquire))
         return;
     /* Same guard as ft_emergency_flush: a fork child must never flush
-     * the parent's PID-named output file. */
-    if (getpid() != g_tracer.pid) {
-        atomic_store_explicit(&g_tracer.collecting, 0, memory_order_release);
-        return;
-    }
+     * the parent's PID-named output file. Do not clobber the global
+     * collecting flag (vfork shares the address space). */
+    if (getpid() != g_tracer.pid) return;
     if (!atomic_exchange_explicit(&g_tracer.collecting, 0,
                                   memory_order_acq_rel))
         return;

@@ -189,6 +189,12 @@ WHERE thread.name LIKE 'worker%' OR thread.is_main_thread = 0;
   rebuilds pid / buffer / writer-thread and continues. The outer
   call frame active at fork time produces an unmatched exit that
   libftrc discards — loss is limited to that one frame.
+- **`vfork`.** Supported only in the POSIX-legal pattern
+  (`vfork` → `execve` / `_exit`). The child shares the parent's
+  address space, so `pthread_atfork` handlers do not fire and the
+  tracer cannot safely rebuild state. Hooks in a `vfork`'d child
+  take the PID-check fast path (return without recording) and do
+  not touch any shared state.
 
 ## What this skill does *not* do
 
