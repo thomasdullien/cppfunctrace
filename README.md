@@ -70,6 +70,31 @@ For a whole translation unit, compile it with `-fno-instrument-functions`.
 The tracer library itself is built that way so it can never recurse
 through its own hooks.
 
+## Use as a coding-agent skill
+
+Ship this to Claude Code / OpenCode / any agent that can `exec` shell
+scripts:
+
+```bash
+cp -r skill ~/.claude/skills/cppfunctrace        # user-scope
+# or, in a project:
+cp -r skill .claude/skills/cppfunctrace
+```
+
+Then the agent can, in four commands, install the tracer, inject the
+right compile flags into an arbitrary Make / CMake / autoconf / Bazel
+project, capture a run, and report:
+
+```bash
+eval "$(./skill/scripts/install.sh)"
+./skill/scripts/enable-build.sh --autoconf     # or --cmake / --env
+./skill/scripts/trace.sh --out /tmp/tr -- ./target args...
+./skill/scripts/analyze.py /tmp/tr/trace.perfetto-trace
+```
+
+See [`skill/SKILL.md`](skill/SKILL.md) for the full activation rules,
+build-system cheatsheet, SQL query library, and pitfalls list.
+
 ## Design
 
 - **Hot path** (~50–100 ns/event): atomic `fetch_add` on the write
