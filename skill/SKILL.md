@@ -94,6 +94,7 @@ Default runtime knobs (override via env var):
 - `CPPFUNCTRACE_OUTPUT_DIR`             (set by the script)
 - `CPPFUNCTRACE_DEFER=1`                (don't auto-start; require explicit `cppfunctrace_start()`)
 - `CPPFUNCTRACE_DISABLE=1`              (no-op on this invocation)
+- `CPPFUNCTRACE_TRACE_CHILDREN=1`       (fork children each get their own `<child_pid>.ftrc`)
 
 ### Step 4 — analyze
 
@@ -177,12 +178,17 @@ WHERE thread.name LIKE 'worker%' OR thread.is_main_thread = 0;
   ```
   int inner(int) __attribute__((no_instrument_function));
   ```
-- **Multi-process workloads.** Each child writes its own
-  `<pid>.ftrc`; pass them all to `ftrc2perfetto` in one invocation
-  so process descriptors deduplicate.
-- **Fork detection.** After `fork()` the child silently stops
-  tracing. If you need to trace the child, do the work before
-  `fork()` or have the child call `cppfunctrace_start()` explicitly.
+- **Multi-process workloads.** By default a fork child stops
+  tracing silently. Set `CPPFUNCTRACE_TRACE_CHILDREN=1` to have
+  each child rebuild tracer state and write its own
+  `<child_pid>.ftrc`. Pass every `.ftrc` to `ftrc2perfetto` in one
+  invocation so process descriptors deduplicate across the merged
+  trace.
+- **Fork detection.** Without `CPPFUNCTRACE_TRACE_CHILDREN=1` the
+  child falls silent. With it, the child's first post-fork hook
+  rebuilds pid / buffer / writer-thread and continues. The outer
+  call frame active at fork time produces an unmatched exit that
+  libftrc discards — loss is limited to that one frame.
 
 ## What this skill does *not* do
 

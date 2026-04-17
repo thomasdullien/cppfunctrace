@@ -47,6 +47,7 @@ Load `trace.perfetto-trace` in <https://ui.perfetto.dev>.
 | `CPPFUNCTRACE_INTERN_CAPACITY` | 1 M slots            | cap on unique functions                                |
 | `CPPFUNCTRACE_DEFER`           | unset                | don't auto-start; require explicit `cppfunctrace_start()` |
 | `CPPFUNCTRACE_DISABLE`         | unset                | disable tracing for this run                           |
+| `CPPFUNCTRACE_TRACE_CHILDREN`  | unset                | fork children rebuild state and write `<child_pid>.ftrc` (default: children silently stop) |
 
 ### Programmatic API
 

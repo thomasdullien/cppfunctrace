@@ -16,6 +16,10 @@
  *   CPPFUNCTRACE_DISABLE      if set and non-empty, tracing never starts
  *   CPPFUNCTRACE_DEFER        if set and non-empty, do NOT auto-start on
  *                             library load — wait for cppfunctrace_start()
+ *   CPPFUNCTRACE_TRACE_CHILDREN  if set and non-empty, fork children
+ *                             rebuild tracer state on first post-fork
+ *                             hook and write their own <child_pid>.ftrc
+ *                             (default: children silently stop tracing)
  */
 
 #ifndef CPPFUNCTRACE_H

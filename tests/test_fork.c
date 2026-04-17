@@ -13,8 +13,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static int before_fork(int x) { return x * 3 + 1; }
-static int after_fork (int x) { return x - 7; }
+static int before_fork (int x) { return x * 3 + 1; }
+static int after_fork  (int x) { return x - 7; }
+static int in_child    (int x) { return x ^ 0x5a; }
 
 int main(int argc, char** argv) {
     const char* mode = argc > 1 ? argv[1] : "exit";
@@ -24,11 +25,20 @@ int main(int argc, char** argv) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        /* Child: do not call any instrumented function. Crash or exit
-         * immediately so any inherited signal / atexit handlers fire
-         * with collecting still COW-inherited as 1. */
-        if (strcmp(mode, "sigterm") == 0) raise(SIGTERM);
-        else if (strcmp(mode, "sigabrt") == 0) raise(SIGABRT);
+        /* Default modes exercise the fork-safety guard — the child
+         * must not leak into the parent's trace. "trace-both" is for
+         * the opt-in CPPFUNCTRACE_TRACE_CHILDREN=1 path: the child
+         * does some instrumented work before exiting so its own
+         * .ftrc file is populated. */
+        if      (strcmp(mode, "sigterm")    == 0) raise(SIGTERM);
+        else if (strcmp(mode, "sigabrt")    == 0) raise(SIGABRT);
+        else if (strcmp(mode, "trace-both") == 0) {
+            volatile int c = 0;
+            for (int i = 0; i < 30; i++) c += in_child(i);
+            /* Normal exit() so atexit handlers fire → child's buffer
+             * flushes into its own <child_pid>.ftrc. */
+            exit(0);
+        }
         else _exit(0);
         _exit(1);
     }

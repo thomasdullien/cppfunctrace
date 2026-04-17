@@ -65,6 +65,13 @@ static size_t          g_modmap_count = 0;
 static size_t          g_modmap_cap = 0;
 static char            g_exe_path[PATH_MAX];  /* readlink /proc/self/exe */
 
+/* CPPFUNCTRACE_TRACE_CHILDREN=1 opts into tracing fork children. By
+ * default a fork child silently stops recording; with this flag set
+ * the first post-fork hook calls ft_reset_child() to rebuild state
+ * (new PID, fresh buffers, fresh writer thread) and the child's
+ * trace lands in its own <child_pid>.ftrc. */
+static int g_trace_children = 0;
+
 static inline int64_t NO_INST ft_now_ns(void);
 static inline int64_t
 ft_now_ns(void)
@@ -104,6 +111,7 @@ static void ft_rebuild_modmap(void) NO_INST;
 static void ft_atfork_prepare(void) NO_INST;
 static void ft_atfork_parent(void) NO_INST;
 static void ft_atfork_child(void) NO_INST;
+static void ft_reset_child(void) NO_INST;
 
 /* ── Initialisation ───────────────────────────────────────────────── */
 
@@ -278,6 +286,9 @@ ft_real_init(void)
     ft_install_handlers();
     atexit(ft_atexit_handler);
 
+    const char* tc = getenv("CPPFUNCTRACE_TRACE_CHILDREN");
+    g_trace_children = (tc && tc[0]) ? 1 : 0;
+
     atomic_store_explicit(&g_tracer.initialised, 1, memory_order_release);
 
     /* Respect CPPFUNCTRACE_DEFER — if set, user calls start() explicitly. */
@@ -435,10 +446,17 @@ ft_record(void* fn, uint8_t flags)
     if (!atomic_load_explicit(&g_tracer.collecting, memory_order_acquire))
         return;
 
-    /* Fork detection: if the app forked, silently stop in the child. */
+    /* Fork detection. By default we silently stop in a child so a
+     * forking app doesn't spray half-baked traces everywhere. When
+     * CPPFUNCTRACE_TRACE_CHILDREN=1 we instead rebuild state on first
+     * post-fork hook and continue tracing under the child's PID. */
     if (getpid() != g_tracer.pid) {
-        atomic_store_explicit(&g_tracer.collecting, 0, memory_order_release);
-        return;
+        if (!g_trace_children) {
+            atomic_store_explicit(&g_tracer.collecting, 0,
+                                   memory_order_release);
+            return;
+        }
+        ft_reset_child();
     }
 
     /* Reentrancy guard: if our own code (malloc during intern etc.) hits
@@ -826,6 +844,101 @@ ft_atfork_child(void)
      * therefore safe — and required — for that same thread to unlock
      * it here so subsequent cold-path work in the child proceeds. */
     pthread_mutex_unlock(&g_tracer.cold_mutex);
+}
+
+/*
+ * Rebuild tracer state in a fork child. Called from ft_record after
+ * the first post-fork hook detects a PID mismatch, but only when
+ * CPPFUNCTRACE_TRACE_CHILDREN=1. Idempotent (guarded by PID
+ * re-check under cold_mutex) so it's safe if multiple new threads
+ * race through the detector at once.
+ *
+ * What gets reset:
+ *   - PID, base timestamp, buffer write offset, thread map count,
+ *     file sequence counter, cumulative bytes
+ *   - Writer-thread semaphores + a freshly pthread_create'd writer
+ *     (the parent's thread is gone along with fork)
+ *   - The calling thread's TLS (stack, thread-index, name-polling
+ *     state, cached kernel TID)
+ *
+ * What is deliberately kept:
+ *   - Intern table + string table (same code, same function pointers)
+ *   - Module map (same address space layout)
+ *   - Signal handlers (installed via sigaction, inherited correctly)
+ *
+ * The child writes to <output_dir>/<child_pid>.ftrc so it never
+ * touches the parent's file.
+ */
+static void NO_INST
+ft_reset_child(void)
+{
+    pthread_mutex_lock(&g_tracer.cold_mutex);
+    if (getpid() == g_tracer.pid) {
+        /* Another thread won the race and already reset. */
+        pthread_mutex_unlock(&g_tracer.cold_mutex);
+        goto out_tls;
+    }
+
+    /* Writer-thread coordination: the parent's writer thread does
+     * not survive fork. Destroy + re-init the semaphores so their
+     * counts start clean, then create a fresh writer. */
+    sem_destroy(&g_tracer.flush_avail);
+    sem_destroy(&g_tracer.free_bufs);
+    sem_init(&g_tracer.flush_avail, 0, 0);
+    sem_init(&g_tracer.free_bufs,   0, FT_NUM_BUFFERS - 1);
+    g_tracer.flush_head = 0;
+    g_tracer.flush_tail = 0;
+    g_tracer.writer_stop = 0;
+    g_tracer.writer_started = 0;
+    if (pthread_create(&g_tracer.writer_thread, NULL,
+                       ft_writer_thread, NULL) == 0) {
+        pthread_setname_np(g_tracer.writer_thread, "cppft-writer");
+        g_tracer.writer_started = 1;
+    }
+
+    /* Reset the active buffer: the pre-fork events in it are already
+     * in the parent's trace via the parent's flush path, so keeping
+     * them would just duplicate data we can't reach from here. */
+    g_tracer.active_buf = 0;
+    atomic_store_explicit(&g_tracer.write_offset, g_tracer.events_start,
+                          memory_order_relaxed);
+    g_tracer.base_ts_ns = ft_now_ns();
+    atomic_store_explicit(&g_tracer.flush_in_progress, 0,
+                          memory_order_relaxed);
+
+    /* Thread map: only the forking thread survives, and it is about
+     * to re-register itself after we return. Other parent-thread
+     * entries point at dead-thread state. */
+    atomic_store_explicit(&g_tracer.thread_map.count, 0,
+                          memory_order_relaxed);
+    memset(g_tracer.thread_map.entries, 0, sizeof(g_tracer.thread_map.entries));
+
+    /* Fresh output-file sequence so the child's rollover counter
+     * starts from zero. */
+    g_tracer.file_seq = 0;
+    g_tracer.cumulative_bytes = 0;
+
+    /* /proc/self/comm may have been set by an exec preparing thread
+     * before fork (rare but legitimate). */
+    ft_capture_process_name(g_tracer.process_name,
+                            sizeof(g_tracer.process_name));
+
+    /* Publish the new PID LAST so concurrent PID checks either see
+     * the old value (and fall into this slow path behind the mutex)
+     * or the new value (and skip straight through). */
+    g_tracer.pid = getpid();
+
+    pthread_mutex_unlock(&g_tracer.cold_mutex);
+
+out_tls:
+    /* The calling thread's per-thread state is also stale: re-
+     * register it in the new thread map, re-query gettid, re-poll
+     * the kernel thread name on the next hook. */
+    tl_stack.registered = 0;
+    tl_stack.depth      = 0;
+    tl_name_stable      = 0;
+    tl_call_count       = 0;
+    tl_kernel_tid       = 0;
 }
 
 static void NO_INST

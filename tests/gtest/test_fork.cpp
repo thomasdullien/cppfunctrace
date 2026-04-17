@@ -176,6 +176,70 @@ TEST(Fork, NormalExitDoesNotCorruptParentTrace)    { run_one("exit");    }
 TEST(Fork, SigtermInChildDoesNotCorruptParentTrace) { run_one("sigterm"); }
 TEST(Fork, SigabrtInChildDoesNotCorruptParentTrace) { run_one("sigabrt"); }
 
+/* Opt-in child tracing: with CPPFUNCTRACE_TRACE_CHILDREN=1, the
+ * child rebuilds tracer state on its first post-fork hook and
+ * writes its own <child_pid>.ftrc. Parent's trace is untouched. */
+TEST(Fork, TraceChildrenEnvVarProducesTwoTraces) {
+    const std::string dir = build_dir() + "/gtest-traces-fork-both";
+    const std::string bin = build_dir() + "/test_fork";
+    clear_dir(dir);
+
+    std::string cmd =
+        "CPPFUNCTRACE_OUTPUT_DIR=" + dir + " "
+        "CPPFUNCTRACE_TRACE_CHILDREN=1 " +
+        bin + " trace-both >/dev/null 2>&1";
+    ASSERT_EQ(std::system(cmd.c_str()), 0);
+
+    auto files = find_ftrc(dir);
+    ASSERT_EQ(files.size(), 2u)
+        << "expected one trace per process (parent + child)";
+
+    /* Sort paths so the (usually smaller/later) child trace is
+     * identifiable. We just check the content of both. */
+    bool saw_before_fork = false;
+    bool saw_after_fork  = false;
+    bool saw_in_child    = false;
+    for (const auto& f : files) {
+        Counts c = aggregate(f);
+        EXPECT_EQ(c.neg_dur, 0u) << f;
+        /* Chunk structure is clean: raw == 2 * complete. */
+        EXPECT_EQ(c.raw, 2 * c.complete) << f;
+        for (const auto& kv : c.by_name) {
+            if (kv.first.find("before_fork") != std::string::npos)
+                saw_before_fork = true;
+            if (kv.first.find("after_fork") != std::string::npos)
+                saw_after_fork = true;
+            if (kv.first.find("in_child") != std::string::npos)
+                saw_in_child = true;
+        }
+    }
+    EXPECT_TRUE(saw_before_fork) << "parent lost its pre-fork events";
+    EXPECT_TRUE(saw_after_fork)  << "parent lost its post-fork events";
+    EXPECT_TRUE(saw_in_child)    << "child didn't record its work";
+}
+
+/* Without the env var set, the "trace-both" workload must still
+ * produce only the parent's file. */
+TEST(Fork, TraceChildrenOffSingleFile) {
+    const std::string dir = build_dir() + "/gtest-traces-fork-both-off";
+    const std::string bin = build_dir() + "/test_fork";
+    clear_dir(dir);
+
+    std::string cmd =
+        "CPPFUNCTRACE_OUTPUT_DIR=" + dir + " " +
+        bin + " trace-both >/dev/null 2>&1";
+    ASSERT_EQ(std::system(cmd.c_str()), 0);
+
+    auto files = find_ftrc(dir);
+    ASSERT_EQ(files.size(), 1u);
+
+    Counts c = aggregate(files[0]);
+    for (const auto& kv : c.by_name) {
+        EXPECT_EQ(kv.first.find("in_child"), std::string::npos)
+            << "child leaked events into parent trace: " << kv.first;
+    }
+}
+
 /* Stress: fork() in a multi-threaded process while another thread is
  * hammering the tracer's cold path. Must not hang, must not crash,
  * and must produce a parent-only trace with sensible counts. The
