@@ -9,10 +9,22 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <stdatomic.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <sys/types.h>
+
+/* `_Atomic` is a C11 keyword that C++ does not accept uniformly.  Map
+ * it to std::atomic<T> when compiled as C++ so the struct layouts
+ * stay identical for both languages (on every platform we target,
+ * std::atomic<T> and _Atomic T have the same size and alignment for
+ * the scalar types used below). */
+#ifdef __cplusplus
+# include <atomic>
+# define CPPFT_ATOMIC(T) std::atomic<T>
+#else
+# include <stdatomic.h>
+# define CPPFT_ATOMIC(T) _Atomic(T)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,7 +46,11 @@ struct __attribute__((packed)) BinaryEvent {
     uint16_t _pad;
 };
 
+#ifdef __cplusplus
+static_assert(sizeof(struct BinaryEvent) == 12, "BinaryEvent must be 12 bytes");
+#else
 _Static_assert(sizeof(struct BinaryEvent) == 12, "BinaryEvent must be 12 bytes");
+#endif
 
 /* ── Buffer header (v3) ────────────────────────────────────────────── */
 
@@ -67,14 +83,14 @@ struct __attribute__((packed)) BufferHeader {
  * either sees NULL (not inserted yet) or a valid (key, func_id) pair.
  */
 struct InternEntry {
-    _Atomic(void*) key;      /* function pointer; NULL = empty slot       */
+    CPPFT_ATOMIC(void*) key; /* function pointer; NULL = empty slot       */
     uint32_t       func_id;  /* 1-based                                   */
 };
 
 struct InternTable {
     struct InternEntry* entries;
     uint32_t capacity;       /* power of two                              */
-    _Atomic uint32_t count;
+    CPPFT_ATOMIC(uint32_t) count;
 };
 
 /* Growable buffer of [uint32_t len][char bytes[len]] — matches the
@@ -105,7 +121,7 @@ struct ThreadMapEntry {
 
 struct ThreadMap {
     struct ThreadMapEntry entries[FT_MAX_THREADS];
-    _Atomic uint16_t count;
+    CPPFT_ATOMIC(uint16_t) count;
 };
 
 /* ── Ring of flush buffers + writer thread ─────────────────────────── */
@@ -123,7 +139,7 @@ typedef struct {
     void*  buffers[FT_NUM_BUFFERS];
     size_t buffer_size;
     int    active_buf;
-    _Atomic size_t write_offset;
+    CPPFT_ATOMIC(size_t) write_offset;
     size_t events_start;        /* byte offset of first event inside buf  */
 
     int64_t base_ts_ns;
@@ -155,10 +171,10 @@ typedef struct {
     uint32_t    file_seq;
 
     /* Flush coordination: one flusher at a time */
-    _Atomic int flush_in_progress;
+    CPPFT_ATOMIC(int) flush_in_progress;
 
-    _Atomic int collecting;
-    _Atomic int initialised;
+    CPPFT_ATOMIC(int) collecting;
+    CPPFT_ATOMIC(int) initialised;
 } CppFuncTracer;
 
 /* ── Intern API (intern.c) ─────────────────────────────────────────── */

@@ -14,7 +14,7 @@ FTRC2PF      = $(BUILD)/ftrc2perfetto
 LIB_OBJS     = $(BUILD)/cppfunctrace.o $(BUILD)/intern.o
 TOOL_OBJS    = $(BUILD)/ftrc2perfetto.o $(BUILD)/libftrc.o $(BUILD)/symresolve.o
 
-.PHONY: all clean install test test-simple
+.PHONY: all clean install test test-simple test-threaded gtest
 
 all: $(LIB) $(STATIC) $(FTRC2PF)
 
@@ -83,3 +83,57 @@ test-threaded: $(BUILD)/test_threaded $(FTRC2PF)
 	$(FTRC2PF) -o $(BUILD)/traces-threaded/out.perfetto-trace \
 	    $(BUILD)/traces-threaded/*.ftrc
 	@ls -la $(BUILD)/traces-threaded/out.perfetto-trace
+
+# ── gtest suite ─────────────────────────────────────────────────────
+# googletest is fetched and built locally (no system package, no sudo).
+
+GTEST_VERSION = v1.14.0
+GTEST_SRC     = $(BUILD)/googletest
+GTEST_INC     = -I$(GTEST_SRC)/googletest/include -I$(GTEST_SRC)/googletest
+GTEST_STAMP   = $(GTEST_SRC)/.stamp
+
+$(GTEST_STAMP):
+	@mkdir -p $(BUILD)
+	@if [ ! -d $(GTEST_SRC) ]; then \
+	    git clone --depth 1 --branch $(GTEST_VERSION) \
+	        https://github.com/google/googletest.git $(GTEST_SRC); \
+	fi
+	@touch $@
+
+$(BUILD)/gtest-all.o: $(GTEST_STAMP)
+	$(CXX) -std=c++17 -O2 -Wall $(GTEST_INC) \
+	    -c -o $@ $(GTEST_SRC)/googletest/src/gtest-all.cc
+
+$(BUILD)/gtest_main.o: $(GTEST_STAMP)
+	$(CXX) -std=c++17 -O2 -Wall $(GTEST_INC) \
+	    -c -o $@ $(GTEST_SRC)/googletest/src/gtest_main.cc
+
+$(BUILD)/libgtest.a: $(BUILD)/gtest-all.o $(BUILD)/gtest_main.o
+	$(AR) rcs $@ $^
+
+# Test helper .so used by symresolve tests — contains known symbols at
+# known offsets so the resolver can be validated against a real ELF.
+$(BUILD)/libtestsyms.so: tests/gtest/testsyms.cpp | $(BUILD)
+	$(CXX) -std=c++17 -O0 -g -fPIC -shared -o $@ $<
+
+# Compile gtest sources. Link against a specially-built copy of the
+# tracer that includes intern.o AND symresolve.o (the real library
+# only ships intern.o; the tool ships symresolve.o).
+$(BUILD)/test_unit: tests/gtest/test_intern.cpp tests/gtest/test_symresolve.cpp \
+                    tests/gtest/test_integration.cpp \
+                    $(BUILD)/libgtest.a \
+                    $(BUILD)/intern.o $(BUILD)/symresolve.o $(BUILD)/libftrc.o \
+                    $(BUILD)/libtestsyms.so
+	$(CXX) -std=c++17 -O0 -g -Wall -Iinclude -Isrc $(GTEST_INC) \
+	    -o $@ \
+	    tests/gtest/test_intern.cpp tests/gtest/test_symresolve.cpp \
+	    tests/gtest/test_integration.cpp \
+	    $(BUILD)/intern.o $(BUILD)/symresolve.o $(BUILD)/libftrc.o \
+	    $(BUILD)/libgtest.a \
+	    -pthread -ldl
+
+gtest: $(BUILD)/test_unit $(BUILD)/test_simple $(BUILD)/test_threaded $(FTRC2PF)
+	@echo "== running unit/integration gtest =="
+	CPPFT_BUILD_DIR=$(abspath $(BUILD)) \
+	CPPFT_TESTSYMS_SO=$(abspath $(BUILD)/libtestsyms.so) \
+	    $(BUILD)/test_unit

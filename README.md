@@ -16,7 +16,8 @@ re-built FFmpeg transcoding a 10-frame video (200 k slices,
 ```bash
 make                    # build/libcppfunctrace.{so,a}, build/ftrc2perfetto
 sudo make install       # → /usr/local (override with PREFIX=)
-make test               # compile and trace the bundled smoke tests
+make test               # end-to-end smoke tests against the bundled binaries
+make gtest              # unit + integration tests (fetches googletest locally)
 ```
 
 ## Use
