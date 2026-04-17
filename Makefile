@@ -66,6 +66,10 @@ $(BUILD)/test_threaded: tests/test_threaded.c $(LIB) | $(BUILD)
 	$(CC) -O0 -g -finstrument-functions -rdynamic -pthread -o $@ tests/test_threaded.c \
 	    -L$(BUILD) -lcppfunctrace -Wl,-rpath,$(abspath $(BUILD))
 
+$(BUILD)/test_fork: tests/test_fork.c $(LIB) | $(BUILD)
+	$(CC) -O0 -g -finstrument-functions -rdynamic -o $@ tests/test_fork.c \
+	    -L$(BUILD) -lcppfunctrace -Wl,-rpath,$(abspath $(BUILD))
+
 test-simple: $(BUILD)/test_simple $(FTRC2PF)
 	@echo "== running test_simple =="
 	@rm -rf $(BUILD)/traces-simple && mkdir -p $(BUILD)/traces-simple
@@ -120,19 +124,20 @@ $(BUILD)/libtestsyms.so: tests/gtest/testsyms.cpp | $(BUILD)
 # tracer that includes intern.o AND symresolve.o (the real library
 # only ships intern.o; the tool ships symresolve.o).
 $(BUILD)/test_unit: tests/gtest/test_intern.cpp tests/gtest/test_symresolve.cpp \
-                    tests/gtest/test_integration.cpp \
+                    tests/gtest/test_integration.cpp tests/gtest/test_fork.cpp \
                     $(BUILD)/libgtest.a \
                     $(BUILD)/intern.o $(BUILD)/symresolve.o $(BUILD)/libftrc.o \
                     $(BUILD)/libtestsyms.so
 	$(CXX) -std=c++17 -O0 -g -Wall -Iinclude -Isrc $(GTEST_INC) \
 	    -o $@ \
 	    tests/gtest/test_intern.cpp tests/gtest/test_symresolve.cpp \
-	    tests/gtest/test_integration.cpp \
+	    tests/gtest/test_integration.cpp tests/gtest/test_fork.cpp \
 	    $(BUILD)/intern.o $(BUILD)/symresolve.o $(BUILD)/libftrc.o \
 	    $(BUILD)/libgtest.a \
 	    -pthread -ldl
 
-gtest: $(BUILD)/test_unit $(BUILD)/test_simple $(BUILD)/test_threaded $(FTRC2PF)
+gtest: $(BUILD)/test_unit $(BUILD)/test_simple $(BUILD)/test_threaded \
+       $(BUILD)/test_fork $(FTRC2PF)
 	@echo "== running unit/integration gtest =="
 	CPPFT_BUILD_DIR=$(abspath $(BUILD)) \
 	CPPFT_TESTSYMS_SO=$(abspath $(BUILD)/libtestsyms.so) \

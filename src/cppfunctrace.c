@@ -710,6 +710,17 @@ ft_emergency_flush(void)
 {
     if (!atomic_load_explicit(&g_tracer.initialised, memory_order_acquire))
         return;
+    /* Never flush from a forked child — g_tracer.pid holds the parent's
+     * PID so the output path would be <parent_pid>.ftrc, corrupting
+     * the parent's trace file. Signal handlers and atexit hooks are
+     * both inherited across fork, so without this guard a child that
+     * dies before any instrumented function ever ran (collecting is
+     * still COW-inherited as 1) would append its empty buffer to the
+     * parent's file. */
+    if (getpid() != g_tracer.pid) {
+        atomic_store_explicit(&g_tracer.collecting, 0, memory_order_release);
+        return;
+    }
     if (!atomic_exchange_explicit(&g_tracer.collecting, 0,
                                   memory_order_acq_rel))
         return;
@@ -830,6 +841,12 @@ cppfunctrace_stop(void)
 {
     if (!atomic_load_explicit(&g_tracer.initialised, memory_order_acquire))
         return;
+    /* Same guard as ft_emergency_flush: a fork child must never flush
+     * the parent's PID-named output file. */
+    if (getpid() != g_tracer.pid) {
+        atomic_store_explicit(&g_tracer.collecting, 0, memory_order_release);
+        return;
+    }
     if (!atomic_exchange_explicit(&g_tracer.collecting, 0,
                                   memory_order_acq_rel))
         return;
