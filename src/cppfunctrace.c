@@ -101,6 +101,9 @@ static void ft_atexit_handler(void) NO_INST;
 static void ft_signal_handler(int signo, siginfo_t* info, void* ucontext) NO_INST;
 static void ft_install_handlers(void) NO_INST;
 static void ft_rebuild_modmap(void) NO_INST;
+static void ft_atfork_prepare(void) NO_INST;
+static void ft_atfork_parent(void) NO_INST;
+static void ft_atfork_child(void) NO_INST;
 
 /* ── Initialisation ───────────────────────────────────────────────── */
 
@@ -238,6 +241,15 @@ ft_real_init(void)
         return;
     }
     pthread_mutex_init(&g_tracer.cold_mutex, NULL);
+
+    /* Keep cold_mutex in a well-defined state across fork(): the
+     * prepare handler locks it (blocking any in-flight cold-path work
+     * until fork returns), the parent handler unlocks it as normal,
+     * and the child handler unlocks it in the new address space. This
+     * prevents the classic "mutex inherited while held by a dead
+     * thread" deadlock if any future code path in a fork child tries
+     * to acquire it (e.g. the opt-in child-tracing reset in patch 3). */
+    pthread_atfork(ft_atfork_prepare, ft_atfork_parent, ft_atfork_child);
 
     /* Writer thread */
     sem_init(&g_tracer.flush_avail, 0, 0);
@@ -779,6 +791,41 @@ static void NO_INST
 ft_atexit_handler(void)
 {
     cppfunctrace_stop();
+}
+
+/* ── fork coordination ────────────────────────────────────────────── */
+/*
+ * `pthread_atfork` handlers serialise fork() against the cold-path
+ * mutex so the child always wakes with it in a known-unlocked state.
+ * This costs nothing in the common case (prepare just takes and
+ * releases a lock nobody else is contending for) and removes a whole
+ * class of subtle deadlocks if the forking thread wasn't the one
+ * doing cold-path work when fork() was called.
+ *
+ * Recording itself still pauses in the child via the getpid() check
+ * in ft_record; these handlers only cover the mutex.
+ */
+
+static void NO_INST
+ft_atfork_prepare(void)
+{
+    pthread_mutex_lock(&g_tracer.cold_mutex);
+}
+
+static void NO_INST
+ft_atfork_parent(void)
+{
+    pthread_mutex_unlock(&g_tracer.cold_mutex);
+}
+
+static void NO_INST
+ft_atfork_child(void)
+{
+    /* The forking thread is the only thread that survives into the
+     * child, and it holds cold_mutex from the prepare handler. It is
+     * therefore safe — and required — for that same thread to unlock
+     * it here so subsequent cold-path work in the child proceeds. */
+    pthread_mutex_unlock(&g_tracer.cold_mutex);
 }
 
 static void NO_INST

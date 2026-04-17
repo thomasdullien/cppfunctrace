@@ -70,6 +70,11 @@ $(BUILD)/test_fork: tests/test_fork.c $(LIB) | $(BUILD)
 	$(CC) -O0 -g -finstrument-functions -rdynamic -o $@ tests/test_fork.c \
 	    -L$(BUILD) -lcppfunctrace -Wl,-rpath,$(abspath $(BUILD))
 
+$(BUILD)/test_fork_contended: tests/test_fork_contended.c $(LIB) | $(BUILD)
+	$(CC) -O0 -g -finstrument-functions -rdynamic -pthread -o $@ \
+	    tests/test_fork_contended.c \
+	    -L$(BUILD) -lcppfunctrace -Wl,-rpath,$(abspath $(BUILD))
+
 test-simple: $(BUILD)/test_simple $(FTRC2PF)
 	@echo "== running test_simple =="
 	@rm -rf $(BUILD)/traces-simple && mkdir -p $(BUILD)/traces-simple
@@ -137,7 +142,7 @@ $(BUILD)/test_unit: tests/gtest/test_intern.cpp tests/gtest/test_symresolve.cpp 
 	    -pthread -ldl
 
 gtest: $(BUILD)/test_unit $(BUILD)/test_simple $(BUILD)/test_threaded \
-       $(BUILD)/test_fork $(FTRC2PF)
+       $(BUILD)/test_fork $(BUILD)/test_fork_contended $(FTRC2PF)
 	@echo "== running unit/integration gtest =="
 	CPPFT_BUILD_DIR=$(abspath $(BUILD)) \
 	CPPFT_TESTSYMS_SO=$(abspath $(BUILD)/libtestsyms.so) \

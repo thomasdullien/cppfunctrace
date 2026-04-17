@@ -176,4 +176,31 @@ TEST(Fork, NormalExitDoesNotCorruptParentTrace)    { run_one("exit");    }
 TEST(Fork, SigtermInChildDoesNotCorruptParentTrace) { run_one("sigterm"); }
 TEST(Fork, SigabrtInChildDoesNotCorruptParentTrace) { run_one("sigabrt"); }
 
+/* Stress: fork() in a multi-threaded process while another thread is
+ * hammering the tracer's cold path. Must not hang, must not crash,
+ * and must produce a parent-only trace with sensible counts. The
+ * test has an implicit timeout via gtest infrastructure — if the
+ * pthread_atfork handlers don't keep cold_mutex coherent, this test
+ * would hang some fraction of the time. */
+TEST(Fork, ForkDuringColdPathContention) {
+    const std::string dir = build_dir() + "/gtest-traces-fork-contended";
+    const std::string bin = build_dir() + "/test_fork_contended";
+    clear_dir(dir);
+
+    std::string cmd =
+        "CPPFUNCTRACE_OUTPUT_DIR=" + dir + " " + bin + " >/dev/null 2>&1";
+    int status = std::system(cmd.c_str());
+    ASSERT_EQ(status, 0) << "parent exited non-zero (possible deadlock)";
+
+    auto files = find_ftrc(dir);
+    ASSERT_EQ(files.size(), 1u) << "expected exactly one parent trace";
+
+    Counts c = aggregate(files[0]);
+    EXPECT_GT(c.complete, 0u);
+    EXPECT_EQ(c.neg_dur, 0u);
+    /* The worker hammered ≥32 distinct functions — the intern table
+     * saw them all. Raw balance check: 2 entries per complete event. */
+    EXPECT_EQ(c.raw, 2 * c.complete);
+}
+
 }  // namespace
